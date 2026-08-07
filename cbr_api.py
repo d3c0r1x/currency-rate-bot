@@ -44,13 +44,19 @@ class Rate(BaseModel):
 def parse_cbr_xml(xml_input: str | bytes) -> dict[str, Rate]:
     """Разбирает XML_daily.asp в {CharCode: Rate}.
 
-    Принимает str (уже декодированный текст без объявленной кодировки)
-    или bytes — в этом случае expat сам учтёт объявленную в XML кодировку
-    (ответ ЦБ приходит в windows-1251, поэтому передаём байты).
+    Принимает str (декодированный текст) или bytes — в этом случае expat сам
+    учтёт объявленную в XML кодировку (ответ ЦБ приходит в windows-1251,
+    поэтому клиент передаёт байты). Для str с декларацией кодировки
+    декларация срезается: ET не принимает строку с не-UTF-8 декларацией.
 
     Числа в XML приходят с запятой в качестве десятичного разделителя
     («91,2345») — заменяем на точку перед float().
     """
+    if isinstance(xml_input, str):
+        xml_input = xml_input.lstrip()
+        end = xml_input.find("?>")
+        if xml_input.startswith("<?xml") and end != -1:
+            xml_input = xml_input[end + 2:]
     root = ET.fromstring(xml_input)
     rates: dict[str, Rate] = {}
     for valute in root.findall("Valute"):

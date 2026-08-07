@@ -29,6 +29,8 @@ def test_parse_cbr_xml() -> None:
     assert rates["USD"].per_one == 91.2345
     assert rates["EUR"].name == "Евро"
     assert rates["JPY"].per_one == 0.6083      # 60,83 за 100 иен
+    # строка с декларацией кодировки тоже парсится (декларация срезается)
+    assert set(parse_cbr_xml(SAMPLE_XML)) == {"USD", "EUR", "JPY"}
 
 
 def test_demo_mode_rates() -> None:
