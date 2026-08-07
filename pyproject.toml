@@ -1,0 +1,9 @@
+[project]
+name = "currency-rate-bot"
+version = "2.0.0"
+description = "Курсы валют ЦБ РФ: XML-парсинг, конвертация, история, алерты, рассылка"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

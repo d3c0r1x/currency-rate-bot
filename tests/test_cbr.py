@@ -1,6 +1,8 @@
-"""Unit-тесты Currency Rate Bot: парсинг XML ЦБ, демо-режим, история."""
+"""Unit-тесты Currency Rate Bot: парсинг XML ЦБ, демо-режим, история,
+watchlist и пороговые алерты."""
 import asyncio
 
+from alerts import evaluate_alerts, parse_alert_args
 from cbr_api import CbrClient, Rate, parse_cbr_xml
 from db import Database
 
@@ -19,6 +21,13 @@ SAMPLE_XML = """<?xml version="1.0" encoding="windows-1251"?>
   <Name>Японская иена</Name><Value>60,8300</Value>
 </Valute>
 </ValCurs>"""
+
+
+def _rates() -> dict[str, Rate]:
+    return {
+        "USD": Rate(char_code="USD", nominal=1, name="Доллар США", value=91.23),
+        "JPY": Rate(char_code="JPY", nominal=100, name="Японская иена", value=60.83),
+    }
 
 
 def test_parse_cbr_xml() -> None:
@@ -88,3 +97,73 @@ def test_history_db(tmp_path) -> None:
         assert [uid for uid, _ in await db.digest_users()] == [1]
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------- продвинутый уровень
+
+def test_watchlist_db(tmp_path) -> None:
+    async def run() -> None:
+        db = Database(str(tmp_path / "rates.db"))
+        await db.init()
+        await db.add_watch(1, "usd")   # регистр нормализуется
+        await db.add_watch(1, "EUR")
+        await db.add_watch(1, "USD")   # дубль игнорируется
+        assert await db.watchlist(1) == ["EUR", "USD"]
+        assert await db.remove_watch(1, "eur")   # регистр не важен
+        assert await db.watchlist(1) == ["USD"]
+        assert not await db.remove_watch(1, "EUR")  # повторное удаление — False
+
+    asyncio.run(run())
+
+
+def test_alert_db_and_trigger(tmp_path) -> None:
+    async def run() -> None:
+        db = Database(str(tmp_path / "rates.db"))
+        await db.init()
+        alert_id = await db.add_alert(1, "USD", 90.0, "below")
+        await db.add_alert(1, "USD", 95.0, "above")
+        await db.add_alert(2, "JPY", 0.6, "below")
+        rows = await db.list_alerts(1)
+        assert len(rows) == 2 and rows[0]["id"] == alert_id + 1  # новые сверху
+
+        # курс USD = 91.23: 'below 90' и 'above 95' не сработали
+        active = await db.all_active_alerts()
+        triggered = evaluate_alerts(_rates(), active)
+        assert triggered == []
+
+        # курс ниже порога: меняем курс и пересчитываем
+        rates_low = {"USD": Rate(char_code="USD", nominal=1, name="Доллар США", value=89.5)}
+        triggered = evaluate_alerts(rates_low, active)
+        assert len(triggered) == 1
+        assert triggered[0]["id"] == alert_id
+        assert round(triggered[0]["current"], 1) == 89.5
+
+        # одноразовость: удаляем сработавший алерт
+        assert await db.remove_alert(triggered[0]["user_id"], triggered[0]["id"])
+        assert await db.remove_alert(2, 3)  # второй алерт тоже
+
+    asyncio.run(run())
+
+
+def test_evaluate_alerts_directions() -> None:
+    rates = _rates()  # USD 91.23, JPY 0.6083
+    alerts = [
+        {"id": 1, "user_id": 1, "char_code": "USD", "threshold": 90.0, "direction": "above"},
+        {"id": 2, "user_id": 1, "char_code": "USD", "threshold": 92.0, "direction": "below"},
+        {"id": 3, "user_id": 2, "char_code": "JPY", "threshold": 0.61, "direction": "below"},
+        {"id": 4, "user_id": 3, "char_code": "XXX", "threshold": 1.0, "direction": "below"},
+    ]
+    triggered = evaluate_alerts(rates, alerts)
+    ids = sorted(t["id"] for t in triggered)
+    # USD 91.23 > 90 (above) ✓; USD 91.23 < 92 (below) ✓;
+    # JPY 0.6083 < 0.61 (below) ✓; XXX нет в курсах — пропущен
+    assert ids == [1, 2, 3]
+
+
+def test_parse_alert_args() -> None:
+    assert parse_alert_args(["USD", "90"]) == ("USD", 90.0, "below")
+    assert parse_alert_args(["usd", "90,5", "above"]) == ("USD", 90.5, "above")
+    assert parse_alert_args(["USD", "abc"]) is None       # не число
+    assert parse_alert_args(["USD", "-5"]) is None        # порог <= 0
+    assert parse_alert_args(["USD", "90", "sideways"]) is None  # неверное направление
+    assert parse_alert_args(["USD"]) is None              # мало аргументов

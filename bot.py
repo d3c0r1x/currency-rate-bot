@@ -1,14 +1,26 @@
 """Currency Rate Bot (aiogram v3 + официальный ЦБ РФ + apscheduler).
 
 Стек: aiogram v3 (Telegram Bot API) + httpx (XML ЦБ РФ) + xml.etree (stdlib,
-парсинг XML) + aiosqlite (история курсов) + APScheduler (ежедневная рассылка).
+парсинг XML) + aiosqlite (история курсов) + APScheduler (ежедневная рассылка
+и проверка алертов).
 
 Команды:
-  /rates          — курсы основных валют на сегодня
+  /rates          — курсы моих валют (watchlist) или основных
   /rate USD       — курс одной валюты
   /convert 100 USD— перевод валюты в рубли
   /history USD    — курс за последние 7 дней (из SQLite)
-  /daily on|off   — подписка на ежедневную рассылку (в 10:00)
+  /daily on|off   — подписка на ежедневную рассылку
+  /watch USD EUR  — добавить валюты в мой список
+  /unwatch USD    — убрать валюту из списка
+  /watchlist      — мой список валют
+  /alert USD 90 below — алерт: уведомить, когда курс пересечёт порог
+  /alerts         — мои алерты
+  /unalert ID     — удалить алерт
+
+Продвинутый уровень:
+  - персональный watchlist; пороговые алерты (чистая логика в alerts.py),
+    проверяются часовым джобом apscheduler;
+  - middlewares: троттлинг и логирование.
 
 Запуск:  python bot.py   (задайте CURRENCY_BOT_TOKEN, или run_bot6.cmd).
 """
@@ -28,8 +40,10 @@ from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
+from alerts import evaluate_alerts, parse_alert_args
 from cbr_api import CbrClient, Rate
 from db import Database
+from middlewares import LoggingMiddleware, ThrottlingMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +59,7 @@ router = Router()
 db = Database(config.DB_PATH)
 cbr = CbrClient()
 
-# Бот создаётся в main() — нужен планировщику для ежедневной рассылки
+# Бот создаётся в main() — нужен планировщику для рассылки и алертов
 _bot: Bot | None = None
 scheduler = AsyncIOScheduler()
 
@@ -85,14 +99,51 @@ async def _daily_job() -> None:
             logger.warning("Не удалось доставить рассылку user_id=%s", user_id)
 
 
+async def _alerts_job() -> None:
+    """Проверка пороговых алертов (по умолчанию раз в час).
+
+    Одноразовые: сработавший алерт удаляется после уведомления, чтобы не
+    спамить. Логика срабатывания — чистая функция alerts.evaluate_alerts.
+    """
+    if _bot is None:
+        return
+    alerts = await db.all_active_alerts()
+    if not alerts:
+        return
+    try:
+        rates = await cbr.fetch_rates()
+    except Exception:
+        logger.exception("Алерты: не удалось получить курсы")
+        return
+    for alert in evaluate_alerts(rates, alerts):
+        direction = "дешевле" if alert["direction"] == "below" else "дороже"
+        try:
+            await _bot.send_message(
+                alert["user_id"],
+                f"🔔 <b>Алерт сработал!</b>\n"
+                f"<b>{alert['char_code']}</b> стал {direction} "
+                f"{_money(alert['threshold'])} ₽ — сейчас "
+                f"<b>{_money(alert['current'])} ₽</b>.",
+            )
+        except Exception:
+            logger.warning("Алерт: не удалось уведомить user_id=%s", alert["user_id"])
+        await db.remove_alert(alert["user_id"], alert["id"])
+
+
+# ---------------------------------------------------------------- команды
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "💱 <b>Currency Rate Bot</b>\n\n"
-        "/rates — курсы основных валют\n"
+        "/rates — курсы моих валют\n"
         "/rate USD — курс одной валюты\n"
         "/convert 100 USD — перевод в рубли\n"
         "/history USD — курс за 7 дней\n"
+        "/watch USD EUR — добавить валюты в список\n"
+        "/watchlist — мой список валют\n"
+        "/alert USD 90 below — алерт на порог курса\n"
+        "/alerts — мои алерты\n"
         "/daily on — ежедневная рассылка (в 10:00)\n\n"
         f"Источник: <b>{'демо-данные' if cbr.demo_mode else 'официальный ЦБ РФ (cbr.ru)'}</b>"
     )
@@ -108,7 +159,10 @@ async def cmd_rates(message: Message) -> None:
         await status.edit_text("⚠️ Не удалось получить курсы. Попробуйте позже.")
         return
     await _save_today(rates)
-    lines = [_fmt(r) for code, r in rates.items() if code in config.MAIN_CURRENCIES]
+    codes = await db.watchlist(message.from_user.id) or config.MAIN_CURRENCIES
+    lines = [_fmt(r) for code, r in rates.items() if code in codes]
+    if not lines:
+        lines = [_fmt(r) for code, r in rates.items() if code in config.MAIN_CURRENCIES]
     await status.edit_text(
         f"💱 <b>Курсы ЦБ РФ на {date.today().isoformat()}</b>\n\n" + "\n".join(lines)
     )
@@ -203,6 +257,97 @@ async def cmd_daily(message: Message) -> None:
     )
 
 
+# ---------------------------------------------------- watchlist и алерты
+
+@router.message(Command("watch"))
+async def cmd_watch(message: Message) -> None:
+    codes = [c.upper() for c in message.text.split()[1:] if c.isalnum() and len(c) <= 8]
+    if not codes:
+        await message.answer("Использование: /watch USD EUR CNY")
+        return
+    for code in codes:
+        await db.add_watch(message.from_user.id, code)
+    await message.answer(
+        f"👀 Валюты добавлены в ваш список: <b>{', '.join(codes)}</b>\n"
+        "/rates — показать их курсы"
+    )
+
+
+@router.message(Command("unwatch"))
+async def cmd_unwatch(message: Message) -> None:
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /unwatch USD")
+        return
+    code = args[1].upper()
+    removed = await db.remove_watch(message.from_user.id, code)
+    await message.answer(
+        f"Валюта <b>{_html.escape(code)}</b> убрана из списка."
+        if removed
+        else f"<b>{_html.escape(code)}</b> не было в вашем списке."
+    )
+
+
+@router.message(Command("watchlist"))
+async def cmd_watchlist(message: Message) -> None:
+    codes = await db.watchlist(message.from_user.id)
+    if not codes:
+        await message.answer(
+            "Ваш список валют пуст. Добавьте: /watch USD EUR\n"
+            "Пока показываются основные валюты."
+        )
+        return
+    await message.answer("👀 <b>Ваш список валют:</b>\n" + "\n".join(f"• {c}" for c in codes))
+
+
+@router.message(Command("alert"))
+async def cmd_alert(message: Message) -> None:
+    parsed = parse_alert_args(message.text.split()[1:])
+    if parsed is None:
+        await message.answer(
+            "Использование: /alert USD 90 below\n"
+            "направление: <b>below</b> (дешевле) или <b>above</b> (дороже)"
+        )
+        return
+    code, threshold, direction = parsed
+    alert_id = await db.add_alert(message.from_user.id, code, threshold, direction)
+    word = "дешевле" if direction == "below" else "дороже"
+    await message.answer(
+        f"🔔 Алерт создан: уведомлю, когда <b>{code}</b> станет {word} "
+        f"<b>{_money(threshold)} ₽</b> (id: {alert_id}).\n"
+        "Проверка — раз в час, /alerts — посмотреть все."
+    )
+
+
+@router.message(Command("alerts"))
+async def cmd_alerts(message: Message) -> None:
+    rows = await db.list_alerts(message.from_user.id)
+    if not rows:
+        await message.answer("У вас нет алертов. Создать: /alert USD 90 below")
+        return
+    lines = [
+        f"• <code>{r['id']}</code> — {r['char_code']} "
+        f"{'<' if r['direction'] == 'below' else '>'} {_money(r['threshold'])} ₽ "
+        f"({r['created_at']})"
+        for r in rows
+    ]
+    await message.answer("🔔 <b>Ваши алерты</b>\n\n" + "\n".join(lines) +
+                         "\n\nУдалить: /unalert ID")
+
+
+@router.message(Command("unalert"))
+async def cmd_unalert(message: Message) -> None:
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("Использование: /unalert 12 (id из /alerts)")
+        return
+    removed = await db.remove_alert(message.from_user.id, int(args[1]))
+    await message.answer(
+        f"Алерт <code>{args[1]}</code> удалён." if removed
+        else f"Алерт <code>{args[1]}</code> не найден."
+    )
+
+
 async def main() -> None:
     global _bot
     if not config.BOT_TOKEN:
@@ -212,12 +357,16 @@ async def main() -> None:
     _bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
+    dp.message.middleware(ThrottlingMiddleware(min_interval=config.THROTTLE_MIN_INTERVAL))
+    dp.update.middleware(LoggingMiddleware())
     await db.init()
     scheduler.add_job(_daily_job, "cron", hour=config.DAILY_DIGEST_HOUR, minute=0)
+    scheduler.add_job(_alerts_job, "interval", minutes=config.ALERT_CHECK_MINUTES)
     scheduler.start()
     logger.info(
-        "Валютный бот запущен. Источник: %s",
+        "Валютный бот запущен. Источник: %s. Алерты: каждые %s мин.",
         "демо-данные" if cbr.demo_mode else "ЦБ РФ (cbr.ru)",
+        config.ALERT_CHECK_MINUTES,
     )
     try:
         await dp.start_polling(_bot)

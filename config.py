@@ -21,3 +21,9 @@ MAIN_CURRENCIES = os.getenv(
     "MAIN_CURRENCIES",
     "USD,EUR,CNY,GBP,JPY,KZT,TRY,BYN",
 ).split(",")
+
+# --- Продвинутый уровень ---
+# Как часто проверять пороговые алерты (минуты)
+ALERT_CHECK_MINUTES = int(os.getenv("ALERT_CHECK_MINUTES", "60"))
+# Минимальный интервал между сообщениями пользователя (секунды)
+THROTTLE_MIN_INTERVAL = float(os.getenv("THROTTLE_MIN_INTERVAL", "0.7"))
