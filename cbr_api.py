@@ -123,3 +123,14 @@ class CbrClient:
         if rate is None:
             return None
         return amount * rate.value / rate.nominal
+
+    async def convert_between(
+        self, code_from: str, code_to: str, amount: float
+    ) -> float | None:
+        """amount единиц code_from → code_to (или None, если валюта не найдена)."""
+        rates = await self.fetch_rates()
+        src = rates.get(code_from.upper())
+        dst = rates.get(code_to.upper())
+        if src is None or dst is None:
+            return None
+        return amount * src.per_one / dst.per_one

@@ -7,7 +7,8 @@
 Команды:
   /rates          — курсы моих валют (watchlist) или основных
   /rate USD       — курс одной валюты
-  /convert 100 USD— перевод валюты в рубли
+  /convert 100 USD — перевод валюты в рубли
+  /convert 100 USD EUR — перевод между валютами
   /history USD    — курс за последние 7 дней (из SQLite)
   /daily on|off   — подписка на ежедневную рассылку
   /watch USD EUR  — добавить валюты в мой список
@@ -139,6 +140,7 @@ async def cmd_start(message: Message) -> None:
         "/rates — курсы моих валют\n"
         "/rate USD — курс одной валюты\n"
         "/convert 100 USD — перевод в рубли\n"
+        "/convert 100 USD EUR — перевод между валютами\n"
         "/history USD — курс за 7 дней\n"
         "/watch USD EUR — добавить валюты в список\n"
         "/watchlist — мой список валют\n"
@@ -194,32 +196,43 @@ async def cmd_rate(message: Message) -> None:
 @router.message(Command("convert"))
 async def cmd_convert(message: Message) -> None:
     args = message.text.split()
-    if len(args) < 3:
-        await message.answer("Использование: /convert 100 USD")
+    if len(args) not in (3, 4):
+        await message.answer(
+            "Использование: /convert 100 USD  (в рубли)\n"
+            "/convert 100 USD EUR  (между двумя валютами)"
+        )
         return
     try:
         amount = float(args[1].replace(",", "."))
     except ValueError:
         await message.answer("Сумма должна быть числом: /convert 100 USD")
         return
-    code = args[2].upper()
+    code_from = args[2].upper()
+    code_to = args[3].upper() if len(args) == 4 else "RUB"
     if amount <= 0:
         await message.answer("Сумма должна быть больше нуля.")
         return
     try:
-        rub = await cbr.convert(code, amount)
+        if code_to == "RUB":
+            result = await cbr.convert(code_from, amount)
+            suffix = "₽"
+        else:
+            result = await cbr.convert_between(code_from, code_to, amount)
+            suffix = _html.escape(code_to)
     except Exception:
-        logger.exception("Не удалось сконвертировать %s", code)
+        logger.exception("Не удалось сконвертировать %s → %s", code_from, code_to)
         await message.answer("⚠️ Не удалось получить курс. Попробуйте позже.")
         return
-    if rub is None:
+    if result is None:
         await message.answer(
-            f"Валюта <b>{_html.escape(code)}</b> не найдена. Пример: /convert 100 USD"
+            f"Валюта <b>{_html.escape(code_from)}</b> или "
+            f"<b>{_html.escape(code_to)}</b> не найдена. "
+            "Пример: /convert 100 USD EUR"
         )
         return
     await message.answer(
-        f"💱 {_money(amount)} {_html.escape(code)} = "
-        f"<b>{_money(rub)} ₽</b>"
+        f"💱 {_money(amount)} {_html.escape(code_from)} = "
+        f"<b>{_money(result)} {suffix}</b>"
     )
 
 

@@ -55,6 +55,32 @@ def test_demo_mode_rates() -> None:
     asyncio.run(run())
 
 
+def test_convert_between() -> None:
+    """100 USD → EUR: 100 * (91.2345 / 1) / (99.4567 / 1) ≈ 91.73."""
+    async def run() -> None:
+        import httpx
+
+        class FakeTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                return httpx.Response(
+                    200, content=SAMPLE_XML.encode("cp1251"), request=request
+                )
+
+        client = CbrClient(demo_mode=False)
+        client._transport = FakeTransport()
+        got = await client.convert_between("USD", "EUR", 100)
+        assert got is not None
+        assert round(got, 2) == round(100 * 91.2345 / 99.4567, 2)
+        # обратное направление — реципрокное значение
+        back = await client.convert_between("EUR", "USD", got)
+        assert round(back, 2) == 100.0
+        # валюты не существует — None
+        assert await client.convert_between("USD", "XXX", 100) is None
+        assert await client.convert_between("XXX", "USD", 100) is None
+
+    asyncio.run(run())
+
+
 def test_convert_math() -> None:
     # 100 USD = 100 * (91.2345 / 1) рублей
     async def run() -> None:
