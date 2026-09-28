@@ -1,3 +1,4 @@
+> **Архив.** Учебный проект раннего периода: оставлен как история, не поддерживается. Актуальные работы — https://d3c0r1x.github.io
 # Currency Rate Bot
 
 [![CI](https://github.com/d3c0r1x/currency-rate-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/currency-rate-bot/actions/workflows/ci.yml)
