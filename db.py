@@ -88,6 +88,20 @@ class Database:
                 rows = await cur.fetchall()
         return [(r[0], r[1]) for r in rows]
 
+    async def latest_snapshot(self) -> tuple[str, dict[str, float]] | None:
+        """Самый свежий сохранённый день: (дата, {код: курс}) — для дельт."""
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                """
+                SELECT date, char_code, value FROM rates_history
+                WHERE date = (SELECT MAX(date) FROM rates_history)
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+        if not rows:
+            return None
+        return rows[0][0], {r[1]: r[2] for r in rows}
+
     # --- ежедневная рассылка ---
 
     async def set_digest(self, user_id: int, username: str | None, on: bool) -> None:

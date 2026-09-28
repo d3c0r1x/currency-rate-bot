@@ -70,11 +70,34 @@ def _money(value: float) -> str:
     return f"{value:,.2f}".replace(",", " ").replace(".", ",")
 
 
-def _fmt(rate: Rate) -> str:
+def _fmt(rate: Rate, prev_value: float | None = None) -> str:
+    delta = ""
+    if prev_value and prev_value != rate.value:
+        diff = rate.value - prev_value
+        arrow = "📈" if diff > 0 else "📉"
+        delta = f" {arrow} {diff:+.2f}"
     return (
         f"<b>{rate.char_code}</b> — {_money(rate.value)} ₽ "
-        f"за {rate.nominal} {_html.escape(rate.name)}"
+        f"за {rate.nominal} {_html.escape(rate.name)}{delta}"
     )
+
+
+async def _prev_rates() -> dict[str, Rate]:
+    """Курсы последнего сохранённого дня из истории (для дельт в /rates).
+
+    Сегодняшний день исключаем: сравнивать курс сам с собой нечего.
+    Если база ещё холодная (истории нет) — возвращаем пустой словарь.
+    """
+    snap = await db.latest_snapshot()
+    if not snap:
+        return {}
+    snap_date, values = snap
+    if snap_date == date.today().isoformat():
+        return {}
+    return {
+        code: Rate(char_code=code, nominal=1, name=code, value=value)
+        for code, value in values.items()
+    }
 
 
 async def _save_today(rates: dict[str, Rate]) -> None:
@@ -162,7 +185,8 @@ async def cmd_rates(message: Message) -> None:
         return
     await _save_today(rates)
     codes = await db.watchlist(message.from_user.id) or config.MAIN_CURRENCIES
-    lines = [_fmt(r) for code, r in rates.items() if code in codes]
+    prev = await _prev_rates()
+    lines = [_fmt(r, prev[code].value if code in prev else None) for code, r in rates.items() if code in codes]
     if not lines:
         lines = [_fmt(r) for code, r in rates.items() if code in config.MAIN_CURRENCIES]
     await status.edit_text(
