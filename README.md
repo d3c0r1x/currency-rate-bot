@@ -1,5 +1,7 @@
 # Currency Rate Bot
 
+[![CI](https://github.com/d3c0r1x/currency-rate-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/currency-rate-bot/actions/workflows/ci.yml)
+
 Курсы валют в Telegram из официального XML ЦБ РФ. Без ключей, без сторонних библиотек для валют: только `xml.etree` из stdlib и HTTP.
 
 Функционал: конвертация валют, история курсов, ежедневная рассылка сводки в 10:00 и пороговые алерты («уведомить, когда USD опустится ниже 90»).
