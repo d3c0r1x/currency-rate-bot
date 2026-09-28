@@ -44,7 +44,7 @@ export CURRENCY_DEMO_MODE=1               # 0 — официальный ЦБ Р
 python bot.py
 ```
 
-На Windows — `run_bot6.cmd` (токен из корневого `.env`).
+На Windows — `start.bat` (токен из корневого `.env`).
 
 ## Структура проекта
 

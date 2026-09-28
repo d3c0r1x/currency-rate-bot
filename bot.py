@@ -23,7 +23,7 @@
     проверяются часовым джобом apscheduler;
   - middlewares: троттлинг и логирование.
 
-Запуск:  python bot.py   (задайте CURRENCY_BOT_TOKEN, или run_bot6.cmd).
+Запуск:  python bot.py   (задайте CURRENCY_BOT_TOKEN, или start.bat).
 """
 from __future__ import annotations
 
